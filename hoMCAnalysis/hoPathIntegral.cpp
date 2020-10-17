@@ -2,6 +2,8 @@
 #include <math.h>
 #include<iostream>
 #include<random>
+#include<fstream>
+
 
 #define RANDOM_ENGINE mt19937_64
 #define RAND_IDX_MAX 512
@@ -11,25 +13,32 @@ class lattice
 {
 
 	public:
-    		lattice(int N=10,double dt=1, double m=2,double w=3,int randseed=0);
+    		lattice(int N=10,double dt=1, double m=2,double w=3,int randseed=0,int skipStepCount =0 ,int writeEventCount=2);
 		~lattice() {} ;
 		bool initialize(string type="zero");
 		void takeSteps(int nSteps);
 		void takeStride(int nStrides=1);
 
+		void printToASCII(int n,string fname="data.txt");
 		void printLattice();
+		void clearBuff();
 	private:
 		int N;
 		double dTau,mTilda,wTilda,xTildaFactor;
 		vector<double> xVec;
 		vector<double> actiondata;
 	        double action;
-		int skipDataCount;
 		int initializationSeed;
+		int skipDataCount;
+		int skipCounter;
+		int writeOutCounter;
+		int writeOutCount;
+		long int stepCount;
+		vector<double> xVecBuffer;
 		double alpha,beta;
-
+	
 		void findAction();
-
+		void fillBuff();
 		RANDOM_ENGINE generator;	
 		uniform_int_distribution<int> intDistribution;	
 		uniform_real_distribution<double> dblDistribution;	
@@ -41,9 +50,9 @@ class lattice
 };
 
 
- lattice::lattice(int n,double dt, double m,double w ,int randseed)
+ lattice::lattice(int n,double dt, double m,double w ,int randseed,int skipStepCount,int writeEventCount)
 		: N(n),dTau(dt),mTilda(m/dt), wTilda(w/dt),xTildaFactor(1.0/dt),
-		  xVec(N,0.0),
+		  xVec(N,0.0),skipDataCount(skipStepCount),writeOutCount(writeEventCount),
 		  alpha(mTilda),beta(mTilda*wTilda*wTilda),
 		  initializationSeed(randseed),
 		  intDistribution(0,N-1),
@@ -69,7 +78,10 @@ bool lattice::initialize(string type)
 	}
 	populateRandomNumbers();
 	findAction();
-	actiondata.push_back(action);
+	fillBuff();
+	writeOutCounter=0;
+	skipCounter=0;
+	stepCount=0;
 }
 
 void lattice::printLattice()
@@ -134,11 +146,27 @@ void lattice::takeSteps(int n)
 		       	xVec[idx]+=deltaX;
 		else
 			deltaS=0;
-		cout<<" dS = "<<deltaS<<" dX = "<<deltaX<<"\n";
+		cout<<" dS = "<<deltaS<<" dX = "<<deltaX;
 		action+=deltaS;
 		cout<<" action = "<<action<<"\n";
-		actiondata.push_back(action);
-	
+		if(skipCounter>=skipDataCount)
+		{
+			fillBuff();
+			skipCounter=0;
+			writeOutCounter+=1;
+			
+		}
+		if(writeOutCounter==writeOutCount)
+		{
+			printToASCII(writeOutCount);
+			clearBuff();
+			writeOutCounter=0;
+		}
+		skipCounter+=1;
+		stepCount+=1;
+		
+		cout<<"stepCount = "<<stepCount<<" , "<<" skipCounter = "<<skipCounter<<"/"<<skipDataCount;
+		cout<<"writeOutCounter = "<<writeOutCounter<<"/"<<writeOutCount<<"\n";
 	}
 }
 
@@ -147,13 +175,54 @@ void lattice::takeStride(int n)
 	takeSteps(N*n);
 }
 
+void lattice::printToASCII(int n,string fname)
+{
+	fstream file(fname.c_str(),ios::app);
+	file<<"\n#N : "<<N<<"\n";
+	file<<"#xVecSize : "<<xVecBuffer.size()<<"\n";
+	file<<"#nWrite : "<<n<<"\n";
+	auto adataBack= actiondata.end()-1;
+	auto adataBeg =actiondata.begin();
+	auto xBuffBack= xVecBuffer.end()-1;
+	auto xBuffBeg = xVecBuffer.begin();
+	
+	for(long int i=0;i < n; i++)
+	{
+		file<<stepCount-(n-i)<<","<<*adataBack<<"\n";
+		file<<*(xBuffBack-N);
+		for(int j=1;j<N;j++)
+		{
+			file<<","<<*(xBuffBack-N+j);
+		}
+		if(adataBack==adataBeg) break;
+		adataBack--;
+		xBuffBack-=N;
+
+	}
+}
+
+void lattice::fillBuff()
+{
+	for(int i=0;i< xVec.size();i++)
+		xVecBuffer.push_back(xVec[i]);
+	actiondata.push_back(action);
+}
+
+
+void lattice::clearBuff()
+{
+	actiondata.clear();
+	xVecBuffer.clear();
+
+}
+
 int main()
 {
 	
 	lattice alat;
 	//alat.initialize("hot");
-	alat.printLattice();
-	alat.takeStride();
+	//alat.printLattice();
+	alat.takeStride(10);
 	alat.printLattice();
 
 	return 0;
