@@ -8,33 +8,40 @@
 #define RANDOM_ENGINE mt19937_64
 #define RAND_IDX_MAX 512
 
+#define SWEEP_COUNT 10000
+
 using namespace std;
 class lattice
 {
 
 	public:
-    		lattice(int N=10,double dt=1, double m=2,double w=3,int randseed=0,int skipStepCount =0 ,int writeEventCount=2);
+		lattice(double mT=1,double wT=1,int nT=120,double dx=1.0,int randseed=0,int skipSweepCount=-1,int writeEventCount=128);
 		~lattice() {} ;
-		bool initialize(string type="zero");
-		void takeSteps(int nSteps);
-		void takeStride(int nStrides=1);
+		void initialize(string type="zero");
+		void takeSweep(int nSteps);
 
-		void printToASCII(int n,string fname="data.txt");
-		void printLattice();
+		void printToASCII(int n=-1);
+		void printLattice(bool printLatticeSites= false);
 		void clearBuff();
+		void clearFile();
+
 	private:
 		int N;
-		double dTau,mTilda,wTilda,xTildaFactor;
+		double mTilda,wTilda;
 		vector<double> xVec;
-		vector<double> actiondata;
 	        double action;
+		double h,idrate;
 		int initializationSeed;
-		int skipDataCount;
+		int skipSweepCount;
 		int skipCounter;
 		int writeOutCounter;
 		int writeOutCount;
 		long int stepCount;
+		long int sweepCount;
+		vector<double> actiondata;
 		vector<double> xVecBuffer;
+		vector<long int> stepCountData;
+		vector<long int> sweepCountData;
 		double alpha,beta;
 	
 		void findAction();
@@ -47,23 +54,30 @@ class lattice
 		double randVals[RAND_IDX_MAX];
 		void populateRandomNumbers();
 		
+
+		string oFileName;
 };
 
-
- lattice::lattice(int n,double dt, double m,double w ,int randseed,int skipStepCount,int writeEventCount)
-		: N(n),dTau(dt),mTilda(m/dt), wTilda(w/dt),xTildaFactor(1.0/dt),
-		  xVec(N,0.0),skipDataCount(skipStepCount),writeOutCount(writeEventCount),
+ lattice::lattice(double mT,double wT ,int nT,double dx,int randseed,int skipSweepCount,int writeEventCount)
+		: N(nT),mTilda(mT), wTilda(wT),
+		  h(dx),idrate(0.8), xVec(N,0.0),
+		  skipSweepCount(skipSweepCount>-1 ? skipSweepCount : 0  ),writeOutCount(writeEventCount>-1 ? writeEventCount: 1),
 		  alpha(mTilda),beta(mTilda*wTilda*wTilda),
 		  initializationSeed(randseed),
 		  intDistribution(0,N-1),
 		  dblDistribution(-0.5,0.5)
+	//	  oFileName(ofname)
 {
 	initialize();
+	oFileName="N"+to_string(N)+"_Nm_"+to_string(int(N*mTilda*1000)/1000)+".txt";
+
 }
 
-bool lattice::initialize(string type)
-{
 
+
+void lattice::initialize(string type)
+{
+	generator.seed(initializationSeed);
 
 	if(type=="zero")
 	{
@@ -72,31 +86,40 @@ bool lattice::initialize(string type)
 	}
 	if(type=="hot")
 	{
-		generator.seed(initializationSeed);
 		for(int i=0;i<N;i++)
 			xVec[i]=dblDistribution(generator);
 	}
 	populateRandomNumbers();
 	findAction();
-	fillBuff();
 	writeOutCounter=0;
 	skipCounter=0;
 	stepCount=0;
+	sweepCount=0;
+	clearBuff();
+	fillBuff();
 }
 
-void lattice::printLattice()
+void lattice::printLattice(bool printLatticeSites)
 {
 	cout<<"Printing Lattice with : "<<"\n";
 	cout<<"              N  =  "<<N<<"\n";
-	cout<<"             dt  =  "<<dTau<<"\n";
 	cout<<"         mTilda  =  "<<mTilda<<"\n";
 	cout<<"         wTilda  =  "<<wTilda<<"\n";
-	cout<<"   xTildaFactor  =  "<<xTildaFactor<<"\n";
 	cout<<"         action  =  "<<action<<"\n";
+	cout<<"              h  =  "<<h<<"\n";
+	cout<<"         idrate  =  "<<idrate<<"\n";
+	cout<<"      stepCount  =  "<<stepCount<<"\n";
+	cout<<"     sweepCount  =  "<<sweepCount<<"\n";
+	cout<<" skipSweepCount  =  "<<skipSweepCount<<"\n";
+	cout<<"  writeOutCount  =  "<<writeOutCount<<"\n";
+
+	if(printLatticeSites)
+	{
 
 	cout<<" Lattice is "<<"\n";
 	for(int i=0;i<N;i++)
 		cout<<" i = " <<i<<" -> "<<xVec[i]<<"\n";
+	}
 }
 
 void lattice::findAction()
@@ -125,31 +148,61 @@ void lattice::populateRandomNumbers()
 	randIdCounter=0;
 }
 
-void lattice::takeSteps(int n)
+void lattice::takeSweep(int n)
 {
-	for(int i=0;i<n;i++)
+	double percentStep=0.25;
+	int oneP=n*percentStep/100;
+	double percent =0;
+	cout<<"stepCount = "<<stepCount<<" , sweepCount = " <<sweepCount<<" , "<<" skipCounter = "<<skipCounter<<"/"<<skipSweepCount<<" , " ;
+	cout<<"writeOutCounter = "<<writeOutCounter<<"/"<<writeOutCount<<"  [ "<<percent<<"%  ]    ";
+	percent+=percentStep;	
+
+	for(int k=0;k<n;k++)
 	{
-		
+	 double accrete=0;
+	//	int mm=0;
+	
+	for(int i=0;i<N;i++)
+	{
 		auto idx=randIdx[randIdCounter];
-		auto deltaX=randVals[randIdCounter]*xTildaFactor;
+		auto deltaX=randVals[randIdCounter]*h;
 		randIdCounter++;
 		if(randIdCounter==RAND_IDX_MAX)
 			populateRandomNumbers();
 
 		auto idxn = idx!=(N-1) ? idx+1 : 0;
 		auto idxp = idx!=  0   ? idx-1 : N-1;
-		auto deltaS= deltaX*(alpha*(2*xVec[idx]+deltaX-xVec[idxn]-xVec[idxp])+beta*(xVec[i]+deltaX/2));
+		//cout<<idx<<" "<<idxn<<" "<<idxp<<"\n";
+		auto deltaS= deltaX*(alpha*(2*xVec[idx]+deltaX-xVec[idxn]-xVec[idxp])+beta*(xVec[idx]+deltaX/2));
+		//cout<< deltaS<<" = "<<deltaX<<"*"<<"("<<alpha<<"*"<<"(2*"<<xVec[idx]<<"+"<<deltaX<<"-"<<xVec[idxn]<<"-"<<xVec[idxp]<<")+"<<beta<<"*"<<"("<<xVec[idx]<<"+"<<deltaX<<"/2))";
 		
 		if(deltaS<0)
-		       	xVec[idx]+=deltaX;
-		else if (dblDistribution(generator) < exp(-1*deltaS) )
-		       	xVec[idx]+=deltaX;
+		{
+			xVec[idx]+=deltaX;
+			accrete+= double(1.0/N);
+	//		mm+=1;	cout<<"m = "<<mm<<" , i =  "<<i<<" accrete+="<<" double(1.0/"<<N<<") "<< accrete<<" , "<<double(1.0/N)<<"\n";
+	
+		}
+		else if ((dblDistribution(generator)+0.5) < exp(-1*deltaS) )
+		{       
+			xVec[idx]+=deltaX;
+			accrete+= double(1.0/N);
+	//		mm+=1;	cout<<"m = "<<mm<<" , i =  "<<i<<" accrete+="<<" double(1.0/"<<N<<") "<< accrete<<" , "<<double(1.0/N)<<"\n";
+
+		}
 		else
 			deltaS=0;
-		cout<<" dS = "<<deltaS<<" dX = "<<deltaX;
+		//cout<<" dS = "<<deltaS<<" dX = "<<deltaX;
 		action+=deltaS;
-		cout<<" action = "<<action<<"\n";
-		if(skipCounter>=skipDataCount)
+		//cout<<" action = "<<action<<"\n";
+		stepCount+=1;
+
+	}
+	
+       	        sweepCount+=1;
+		skipCounter+=1;
+	        
+		if(skipCounter>=skipSweepCount)
 		{
 			fillBuff();
 			skipCounter=0;
@@ -158,47 +211,57 @@ void lattice::takeSteps(int n)
 		}
 		if(writeOutCounter==writeOutCount)
 		{
+			//cout<<"\nwriting out "<<"\n";
 			printToASCII(writeOutCount);
 			clearBuff();
 			writeOutCounter=0;
 		}
-		skipCounter+=1;
-		stepCount+=1;
 		
-		cout<<"stepCount = "<<stepCount<<" , "<<" skipCounter = "<<skipCounter<<"/"<<skipDataCount;
-		cout<<"writeOutCounter = "<<writeOutCounter<<"/"<<writeOutCount<<"\n";
+		if(sweepCount%oneP==0)
+		{
+		cout<<"\r stepCount = "<<stepCount<<" , sweepCount = " <<sweepCount<<" , "<<" skipCounter = "<<skipCounter<<"/"<<skipSweepCount<<" , " ;
+	        cout<<"writeOutCounter = "<<writeOutCounter<<"/"<<writeOutCount<<"  [ "<<percent<<"%  ]    ";//<<"\n";
+		percent+=percentStep;	
+		}
+		
+		//cout<<" h = "<<h<<" accrete = "<<accrete;//<<" \n";
+		h*= accrete/idrate;
 	}
+	cout<<"\rstepCount = "<<stepCount<<" , sweepCount = " <<sweepCount<<" , "<<" skipCounter = "<<skipCounter<<"/"<<skipSweepCount<<" , " ;
+	cout<<"writeOutCounter = "<<writeOutCounter<<"/"<<writeOutCount<<"  [ "<<percent<<"%  ]    ";
+
 }
 
-void lattice::takeStride(int n)
-{
-	takeSteps(N*n);
-}
 
-void lattice::printToASCII(int n,string fname)
+void lattice::printToASCII(int n)
 {
-	fstream file(fname.c_str(),ios::app);
+	if(n<0)
+		n=actiondata.size();
+
+	fstream file(oFileName.c_str(),ios::app);
 	file<<"\n#N : "<<N<<"\n";
 	file<<"#xVecSize : "<<xVecBuffer.size()<<"\n";
 	file<<"#nWrite : "<<n<<"\n";
-	auto adataBack= actiondata.end()-1;
-	auto adataBeg =actiondata.begin();
-	auto xBuffBack= xVecBuffer.end()-1;
-	auto xBuffBeg = xVecBuffer.begin();
-	
+	auto adataIt =actiondata.begin();
+	auto xBuffIt = xVecBuffer.begin();
+	auto sweepCountIt =sweepCountData.begin();
 	for(long int i=0;i < n; i++)
 	{
-		file<<stepCount-(n-i)<<","<<*adataBack<<"\n";
-		file<<*(xBuffBack-N);
+		//cout<<"\n"<<"printing " << stepCount-(n-i);
+		file<<*sweepCountIt<<","<<*adataIt<<",";
+		file<<*(xBuffIt);
 		for(int j=1;j<N;j++)
 		{
-			file<<","<<*(xBuffBack-N+j);
+			xBuffIt++;
+			file<<","<<*(xBuffIt);
 		}
-		if(adataBack==adataBeg) break;
-		adataBack--;
-		xBuffBack-=N;
+		adataIt++;
+		sweepCountIt++;
+		file<<"\n";
 
 	}
+
+	file.close();
 }
 
 void lattice::fillBuff()
@@ -206,6 +269,8 @@ void lattice::fillBuff()
 	for(int i=0;i< xVec.size();i++)
 		xVecBuffer.push_back(xVec[i]);
 	actiondata.push_back(action);
+	sweepCountData.push_back(sweepCount);
+	stepCountData.push_back(stepCount);
 }
 
 
@@ -213,18 +278,59 @@ void lattice::clearBuff()
 {
 	actiondata.clear();
 	xVecBuffer.clear();
-
+	sweepCountData.clear();
+	stepCountData.clear();
+}
+void lattice::clearFile()
+{
+	cout<<"Purging : "<<oFileName<<"\n";
+	fstream file(oFileName.c_str(),ios::out);
+	file.close();
 }
 
-int main()
+
+int main(int argc,char *argv[])
 {
-	
-	lattice alat;
-	//alat.initialize("hot");
-	//alat.printLattice();
-	alat.takeStride(10);
+
+	double m=1,mN=120;
+	int randseed=0;
+	int skipSweepCount =100;
+	int writeEventCount=128;
+	double h=1;
+	long int eventsRequired=8;
+	long int sweepMaxCount(eventsRequired*skipSweepCount);
+
+	if(argc>1)
+		m=atof(argv[1]);
+	if(argc>2)
+		mN=atof(argv[2]);
+	if(argc>3)
+		skipSweepCount=int(atof(argv[3]));
+	if(argc>4)
+		eventsRequired=atof(argv[4]);
+
+	sweepMaxCount=eventsRequired*skipSweepCount;
+	int N=int(mN/m);
+	double w=m;
+
+
+	//lattice(double mT=1,double wT=1,int nT=120,double dx=1.0,int randseed=0,int skipSweepCount=-1,int writeEventCount=128);
+	lattice alat(m,w,N,h,randseed,skipSweepCount,writeEventCount);
+	alat.initialize("hot");
 	alat.printLattice();
 
+	cout<<"\nDoing simulation for "<<sweepMaxCount<<" sweeps for storing "<<eventsRequired<<" configurations \n";
+	cout<<"\n";
+	alat.clearFile();
+	cout<<"\n";
+	alat.takeSweep(sweepMaxCount);
+	cout<<"\n";
+	cout<<"\n";
+	alat.printLattice();
+	alat.printToASCII();
+	cout<<"\n";
+	//alat.takeStride(10);
+	//alat.printLattice();
 	return 0;
-
 }
+
